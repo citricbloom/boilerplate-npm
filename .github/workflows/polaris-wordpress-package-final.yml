@@ -1,0 +1,63 @@
+name: Polaris WordPress package final
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-wordpress-package-final.yml
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+          fetch-depth: 0
+
+      - name: Download controlled WordPress source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/polaris-wp-build
+          mkdir -p /tmp/polaris-wp-build
+          curl --fail --location --retry 3 'https://cdn-editing-temp.picsart.com/editing-temp/14a7eb2e-fb75-4c91-940d-bc50c7312b4f.x-tar' --output /tmp/polaris-wp-build/source.tar.gz
+          echo '95c1021a566f67db5e5a4165cc7fd70a38c25d9e51fde7709f0a1442cb9d2c1f  /tmp/polaris-wp-build/source.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/polaris-wp-build/source.tar.gz -C /tmp/polaris-wp-build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build and validate packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x /tmp/polaris-wp-build/build-package.sh
+          /tmp/polaris-wp-build/build-package.sh "$GITHUB_WORKSPACE"
+
+      - name: Publish distributable files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf wordpress-dist
+          cp -a /tmp/polaris-wp-build/wordpress-dist ./wordpress-dist
+          git config user.name 'Polaris WordPress Build Bot'
+          git config user.email '78444086+citricbloom@users.noreply.github.com'
+          git add wordpress-dist
+          if git diff --cached --quiet; then
+            echo 'WordPress package already current.'
+          else
+            git commit -m 'Publish Polaris WordPress package v1.0.1'
+            git push origin HEAD:polaris-preview
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-wordpress-package-v1.0.1
+          path: /tmp/polaris-wp-build/wordpress-dist
+          retention-days: 14
