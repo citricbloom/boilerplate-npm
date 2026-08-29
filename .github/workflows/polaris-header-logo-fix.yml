@@ -19,46 +19,24 @@ jobs:
           ref: polaris-preview
           fetch-depth: 0
 
-      - name: Remove only the top sticky CTA and restore the complete Polaris logo
+      - name: Apply exact website edits
         shell: bash
         run: |
           set -euo pipefail
 
-          # Use the complete original Polaris logo from the current Polaris website.
           curl --fail --location --retry 3 \
-            'https://polariswellbeing.com/wp-content/uploads/2024/02/cropped-polaris-logo.png' \
+            https://polariswellbeing.com/wp-content/uploads/2024/02/cropped-polaris-logo.png \
             --output assets/polaris-mark.png
 
-          python - <<'PY'
-          from pathlib import Path
-          import re
+          # Remove only the button inside the sticky header. The bottom mobile CTA
+          # and the in-page Talk to our team buttons deliberately remain.
+          sed -i '/<a class="button header-cta" href="talk-to-our-team.html">Talk to our team<\/a>/d' ./*.html
 
-          # Remove only the CTA inside the sticky site header. Keep the persistent
-          # mobile bottom CTA and all in-page appointment buttons.
-          header_cta = re.compile(
-              r'\s*<a class="button header-cta" href="talk-to-our-team\.html">Talk to our team</a>'
-          )
-
-          changed = []
-          for path in sorted(Path('.').glob('*.html')):
-              source = path.read_text(encoding='utf-8')
-              updated = header_cta.sub('', source)
-              if updated != source:
-                  path.write_text(updated, encoding='utf-8')
-                  changed.append(str(path))
-
-          css_path = Path('styles.css')
-          css = css_path.read_text(encoding='utf-8')
-          marker = '/* Founder correction: no CTA inside sticky header; complete logo retained */'
-          if marker not in css:
-              css += r'''
+          cat >> styles.css <<'CSS'
 
 /* Founder correction: no CTA inside sticky header; complete logo retained */
 .header-cta { display: none !important; }
-.brand {
-  flex: 0 0 auto;
-  overflow: visible;
-}
+.brand { flex: 0 0 auto; overflow: visible; }
 .brand img {
   display: block !important;
   width: auto !important;
@@ -84,7 +62,6 @@ jobs:
   object-fit: contain !important;
   object-position: left center !important;
 }
-
 @media (max-width: 759px) {
   .brand img {
     width: auto !important;
@@ -99,31 +76,25 @@ jobs:
     max-height: 62px !important;
   }
 }
-'''
-              css_path.write_text(css, encoding='utf-8')
-              changed.append(str(css_path))
+CSS
 
-          print('Changed:')
-          for item in changed:
-              print(' -', item)
-          PY
-
-      - name: Verify exact CTA scope and logo asset
+      - name: Verify exact scope
         shell: bash
         run: |
           set -euo pipefail
           if grep -R --include='*.html' -n 'class="button header-cta"' .; then
-            echo 'Top sticky header CTA still exists' >&2
             exit 1
           fi
           grep -R --include='*.html' -q 'class="mobile-contact"' .
           grep -R --include='*.html' -q '>Talk to our team</a>' .
           python - <<'PY'
-          from PIL import Image
-          image = Image.open('assets/polaris-mark.png')
-          assert image.width > image.height * 2, image.size
-          assert image.width >= 250 and image.height >= 90, image.size
-          print('Complete logo dimensions:', image.size)
+          import struct
+          with open('assets/polaris-mark.png', 'rb') as file:
+              header = file.read(24)
+          assert header[:8] == b'\x89PNG\r\n\x1a\n'
+          width, height = struct.unpack('>II', header[16:24])
+          assert width >= 250 and height >= 90 and width > height * 2, (width, height)
+          print('Complete logo dimensions:', width, height)
           PY
 
       - name: Commit website edits
