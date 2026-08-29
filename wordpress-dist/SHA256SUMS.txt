@@ -1,0 +1,8 @@
+1951cd62a3d42891abeea5a084134c942ecac0e31f4d50d35066a72dfe4d34a6  wordpress-dist/CONTENT-MODEL.md
+6874e5dd38ce30514bbd8305f6f8458b1d4ccccc4ef87250527aa9e094d357a5  wordpress-dist/INSTALLATION-GUIDE.md
+8b8bc1aca8fec360b5ef7e63e629a63c39f13f3d46e9b1cfa8352547016fc68a  wordpress-dist/QA-ACCEPTANCE.md
+5afd66f0ee35c96d19bf9313bc4a647a222272a85617824494700ee3c3295ebc  wordpress-dist/README-PACKAGE.md
+1dc4da17a7ea66f0ad8d99f71369471ec305f28a563daa1f8e7f528fb5c1a884  wordpress-dist/polaris-core-v1.0.1.zip
+fae33648ace658025dc99bb66144649420636e9b4d8a738638382530e701e2a0  wordpress-dist/polaris-wellbeing-theme-v1.0.1.zip
+0642765df10ae990a1d0317ab83af2aa07949309925b272fc71be628a94de601  wordpress-dist/polaris-wordpress-godaddy-package-v1.0.1.zip
+291fd308abd9c436d08caa906dc8b73a7b9eddbbd6dcc69470afae0b186b8239  wordpress-dist/polaris-wordpress-playground-bundle-v1.0.1.zip

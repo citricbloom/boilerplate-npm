@@ -1,0 +1,29 @@
+{
+  "CONTENT-MODEL.md": {
+    "bytes": 390
+  },
+  "INSTALLATION-GUIDE.md": {
+    "bytes": 4122
+  },
+  "QA-ACCEPTANCE.md": {
+    "bytes": 2143
+  },
+  "README-PACKAGE.md": {
+    "bytes": 444
+  },
+  "SHA256SUMS.txt": {
+    "bytes": 873
+  },
+  "polaris-core-v1.0.1.zip": {
+    "bytes": 17218
+  },
+  "polaris-wellbeing-theme-v1.0.1.zip": {
+    "bytes": 283049
+  },
+  "polaris-wordpress-godaddy-package-v1.0.1.zip": {
+    "bytes": 304914
+  },
+  "polaris-wordpress-playground-bundle-v1.0.1.zip": {
+    "bytes": 301526
+  }
+}
