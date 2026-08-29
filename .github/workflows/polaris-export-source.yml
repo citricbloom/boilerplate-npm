@@ -1,0 +1,31 @@
+name: Export Polaris static source
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-export-source.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+      - name: Prepare source bundle
+        shell: bash
+        run: |
+          mkdir -p export
+          cp -a ./*.html ./*.css ./*.js export/ 2>/dev/null || true
+          cp -a assets export/
+          cp -a ASSET-PROVENANCE.md README.md export/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-static-source
+          path: export
+          retention-days: 7
