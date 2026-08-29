@@ -79,11 +79,16 @@ jobs:
               if (state.brandVisibleText !== '') {
                 throw new Error(`${item.name}: unexpected visible text beside logo: ${state.brandVisibleText}`);
               }
-              if (state.logoRenderedWidth < 100 || state.logoRenderedHeight < 25) {
-                throw new Error(`${item.name}: complete logo is not rendered at a usable size: ${JSON.stringify(state)}`);
+              if (state.logoRenderedHeight < 48 || state.logoRenderedWidth < 48) {
+                throw new Error(`${item.name}: original logo is not rendered at a usable size: ${JSON.stringify(state)}`);
               }
-              if (state.logoNaturalWidth <= state.logoNaturalHeight) {
-                throw new Error(`${item.name}: logo asset does not appear to be the complete horizontal logo: ${JSON.stringify(state)}`);
+              if (!state.logoNaturalWidth || !state.logoNaturalHeight) {
+                throw new Error(`${item.name}: logo asset did not load: ${JSON.stringify(state)}`);
+              }
+              const naturalRatio = state.logoNaturalWidth / state.logoNaturalHeight;
+              const renderedRatio = state.logoRenderedWidth / state.logoRenderedHeight;
+              if (Math.abs(naturalRatio - renderedRatio) > 0.03) {
+                throw new Error(`${item.name}: logo proportions are distorted: ${JSON.stringify(state)}`);
               }
 
               await page.screenshot({ path: `logo-render-qa/${item.name}.png`, fullPage: false });
@@ -100,6 +105,7 @@ jobs:
           JS
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: polaris-logo-render-qa
           path: logo-render-qa
