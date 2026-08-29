@@ -1,0 +1,79 @@
+name: Polaris full-logo proportion fix
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-logo-proportion-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-logo-proportions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+          fetch-depth: 0
+
+      - name: Preserve the complete original logo without distortion
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          css_path = Path('styles.css')
+          css = css_path.read_text(encoding='utf-8')
+          marker = '/* Polaris original full-logo proportions v2 */'
+          if marker not in css:
+              css += """
+
+          /* Polaris original full-logo proportions v2 */
+          .brand img {
+            width: auto !important;
+            height: 56px !important;
+            max-width: none !important;
+            max-height: 56px !important;
+            object-fit: contain !important;
+            object-position: left center !important;
+          }
+          .footer-brand img {
+            width: auto !important;
+            height: 70px !important;
+            max-width: none !important;
+            max-height: 70px !important;
+            object-fit: contain !important;
+            object-position: left center !important;
+          }
+
+          @media (max-width: 759px) {
+            .brand img {
+              width: auto !important;
+              height: 52px !important;
+              max-height: 52px !important;
+            }
+            .footer-brand img {
+              width: auto !important;
+              height: 66px !important;
+              max-height: 66px !important;
+            }
+          }
+          """
+              css_path.write_text(css, encoding='utf-8')
+          PY
+
+      - name: Commit proportional full-logo treatment
+        shell: bash
+        run: |
+          git config user.name 'Polaris Preview Bot'
+          git config user.email '78444086+citricbloom@users.noreply.github.com'
+          git add styles.css
+          if git diff --cached --quiet; then
+            echo 'No changes required.'
+          else
+            git commit -m 'Preserve complete original Polaris logo proportions'
+            git push origin HEAD:polaris-preview
+          fi
