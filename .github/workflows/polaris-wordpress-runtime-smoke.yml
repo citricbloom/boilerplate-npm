@@ -28,6 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/polaris-runtime
+          : > /tmp/polaris-runtime/cookies.txt
           npx --yes @wp-playground/cli@latest server \
             --blueprint=wordpress-dist/polaris-wordpress-playground-bundle-v1.0.1.zip \
             --port=9400 \
@@ -36,14 +37,16 @@ jobs:
           echo $! > /tmp/polaris-runtime/playground.pid
 
           status=000
-          for i in {1..120}; do
-            status=$(curl -sS -L --max-redirs 10 \
+          for i in {1..180}; do
+            status=$(curl -sS -L --max-redirs 10 --connect-timeout 2 --max-time 12 \
+              --cookie /tmp/polaris-runtime/cookies.txt \
+              --cookie-jar /tmp/polaris-runtime/cookies.txt \
               -D /tmp/polaris-runtime/headers.txt \
               -o /tmp/polaris-runtime/home.html \
               -w '%{http_code}' \
-              http://127.0.0.1:9400/ || true)
+              http://localhost:9400/ || true)
             echo "attempt=$i final_status=$status" >> /tmp/polaris-runtime/curl-status.log
-            if [ "$status" = "200" ]; then
+            if [ "$status" = "200" ] && grep -q 'Your life is connected' /tmp/polaris-runtime/home.html; then
               break
             fi
             if ! kill -0 "$(cat /tmp/polaris-runtime/playground.pid)" 2>/dev/null; then
@@ -54,7 +57,6 @@ jobs:
           done
 
           echo "Final HTTP status: $status"
-          cat /tmp/polaris-runtime/headers.txt || true
           tail -200 /tmp/polaris-runtime/playground.log || true
           test "$status" = "200"
           test -s /tmp/polaris-runtime/home.html
