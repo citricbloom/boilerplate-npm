@@ -2,7 +2,8 @@ name: Polaris logo-only header fix
 
 on:
   push:
-    branches: [polaris-preview]
+    branches:
+      - polaris-preview
     paths:
       - .github/workflows/polaris-logo-only-header.yml
 
@@ -30,14 +31,12 @@ jobs:
               source = path.read_text(encoding='utf-8')
               updated = source
 
-              # Remove only the additional HTML wordmark beside the original logo.
               updated = re.sub(
                   r'\s*<span class="brand-name"><span>Polaris</span><strong>Wellbeing</strong></span>',
                   '',
                   updated,
               )
 
-              # Remove only the additional footer wordmark beside the original logo.
               updated = re.sub(
                   r'(<a class="footer-brand"[^>]*>\s*<img[^>]*src="assets/polaris-mark\.png"[^>]*>)\s*<strong>Polaris Wellbeing</strong>(\s*</a>)',
                   r'\1\2',
@@ -51,40 +50,40 @@ jobs:
           css_path = Path('styles.css')
           css = css_path.read_text(encoding='utf-8')
           marker = '/* Polaris full-logo lockup: remove duplicate HTML wordmark */'
+          override = """
+
+          /* Polaris full-logo lockup: remove duplicate HTML wordmark */
+          .brand-name { display: none !important; }
+          .brand img {
+            width: 148px;
+            height: auto;
+            max-height: 52px;
+            object-fit: contain;
+            object-position: left center;
+          }
+          .footer-brand img {
+            width: 156px;
+            height: auto;
+            max-height: 58px;
+            object-fit: contain;
+            object-position: left center;
+          }
+          .footer-brand strong { display: none !important; }
+
+          @media (max-width: 759px) {
+            .brand img {
+              width: 118px;
+              height: auto;
+              max-height: 46px;
+            }
+            .footer-brand img {
+              width: 146px;
+              height: auto;
+            }
+          }
+          """
           if marker not in css:
-              css += '''
-
-/* Polaris full-logo lockup: remove duplicate HTML wordmark */
-.brand-name { display: none !important; }
-.brand img {
-  width: 148px;
-  height: auto;
-  max-height: 52px;
-  object-fit: contain;
-  object-position: left center;
-}
-.footer-brand img {
-  width: 156px;
-  height: auto;
-  max-height: 58px;
-  object-fit: contain;
-  object-position: left center;
-}
-.footer-brand strong { display: none !important; }
-
-@media (max-width: 759px) {
-  .brand img {
-    width: 118px;
-    height: auto;
-    max-height: 46px;
-  }
-  .footer-brand img {
-    width: 146px;
-    height: auto;
-  }
-}
-'''
-              css_path.write_text(css, encoding='utf-8')
+              css_path.write_text(css + override, encoding='utf-8')
               changed.append(str(css_path))
 
           print('Changed files:')
@@ -92,7 +91,7 @@ jobs:
               print(' -', item)
           PY
 
-      - name: Verify duplicate header wordmark is gone
+      - name: Verify duplicate website wordmark is gone
         shell: bash
         run: |
           if grep -R --include='*.html' -n '<span class="brand-name"><span>Polaris</span><strong>Wellbeing</strong></span>' .; then
