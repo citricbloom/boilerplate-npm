@@ -23,57 +23,54 @@ jobs:
         with:
           node-version: 22
 
-      - name: Start WordPress Playground CLI with diagnostics
+      - name: Start WordPress Playground CLI and verify rendered home page
         shell: bash
         run: |
-          set -u
-          mkdir -p /tmp/polaris-runtime-diagnostics
-          npx --yes @wp-playground/cli@latest server --blueprint=wordpress-dist/polaris-wordpress-playground-bundle-v1.0.1.zip --port=9400 --verbosity=debug > /tmp/polaris-runtime-diagnostics/playground.log 2>&1 &
-          echo $! > /tmp/polaris-runtime-diagnostics/playground.pid
+          set -euo pipefail
+          mkdir -p /tmp/polaris-runtime
+          npx --yes @wp-playground/cli@latest server \
+            --blueprint=wordpress-dist/polaris-wordpress-playground-bundle-v1.0.1.zip \
+            --port=9400 \
+            --verbosity=debug \
+            > /tmp/polaris-runtime/playground.log 2>&1 &
+          echo $! > /tmp/polaris-runtime/playground.pid
 
           status=000
           for i in {1..120}; do
-            status=$(curl -sS -o /tmp/polaris-runtime-diagnostics/home-response.html -w '%{http_code}' http://127.0.0.1:9400/ || true)
-            echo "attempt=$i status=$status" >> /tmp/polaris-runtime-diagnostics/curl-status.log
+            status=$(curl -sS -L --max-redirs 10 \
+              -D /tmp/polaris-runtime/headers.txt \
+              -o /tmp/polaris-runtime/home.html \
+              -w '%{http_code}' \
+              http://127.0.0.1:9400/ || true)
+            echo "attempt=$i final_status=$status" >> /tmp/polaris-runtime/curl-status.log
             if [ "$status" = "200" ]; then
               break
             fi
-            if ! kill -0 "$(cat /tmp/polaris-runtime-diagnostics/playground.pid)" 2>/dev/null; then
-              echo 'Playground process exited.' >> /tmp/polaris-runtime-diagnostics/curl-status.log
-              break
+            if ! kill -0 "$(cat /tmp/polaris-runtime/playground.pid)" 2>/dev/null; then
+              cat /tmp/polaris-runtime/playground.log
+              exit 1
             fi
             sleep 1
           done
 
-          find /tmp -maxdepth 8 -type f \( -name debug.log -o -name error_log -o -name '*.sqlite' -o -name wp-config.php \) -print > /tmp/polaris-runtime-diagnostics/discovered-files.txt 2>/dev/null || true
-          while IFS= read -r file; do
-            case "$file" in
-              *debug.log|*error_log|*wp-config.php)
-                safe=$(printf '%s' "$file" | sed 's#[/ ]#_#g')
-                cp "$file" "/tmp/polaris-runtime-diagnostics/${safe}" 2>/dev/null || true
-                ;;
-            esac
-          done < /tmp/polaris-runtime-diagnostics/discovered-files.txt
-
           echo "Final HTTP status: $status"
-          cat /tmp/polaris-runtime-diagnostics/home-response.html || true
-          tail -200 /tmp/polaris-runtime-diagnostics/playground.log || true
-
-          if [ "$status" != "200" ]; then
-            exit 1
-          fi
-          grep -q 'Your life is connected' /tmp/polaris-runtime-diagnostics/home-response.html
-          grep -q 'A colourful, welcoming therapy room' /tmp/polaris-runtime-diagnostics/home-response.html
-          if grep -q 'class="button header-cta"' /tmp/polaris-runtime-diagnostics/home-response.html; then
+          cat /tmp/polaris-runtime/headers.txt || true
+          tail -200 /tmp/polaris-runtime/playground.log || true
+          test "$status" = "200"
+          test -s /tmp/polaris-runtime/home.html
+          grep -q 'Your life is connected' /tmp/polaris-runtime/home.html
+          grep -q 'A colourful, welcoming therapy room' /tmp/polaris-runtime/home.html
+          if grep -q 'class="button header-cta"' /tmp/polaris-runtime/home.html; then
             echo 'Removed sticky header CTA returned' >&2
             exit 1
           fi
-          grep -q 'class="mobile-contact"' /tmp/polaris-runtime-diagnostics/home-response.html
+          grep -q 'class="mobile-contact"' /tmp/polaris-runtime/home.html
+          grep -q 'wp-content/themes/polaris-wellbeing' /tmp/polaris-runtime/home.html
           echo 'WordPress runtime smoke passed.'
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: polaris-wordpress-runtime-diagnostics
-          path: /tmp/polaris-runtime-diagnostics
+          name: polaris-wordpress-runtime-smoke
+          path: /tmp/polaris-runtime
           retention-days: 7
