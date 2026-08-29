@@ -1,0 +1,269 @@
+name: Polaris asset crawl
+
+on:
+  push:
+    branches: [polaris-preview]
+    paths:
+      - .github/workflows/polaris-assets.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install crawler dependencies
+        run: python -m pip install --disable-pip-version-check requests beautifulsoup4 pillow lxml
+
+      - name: Crawl Polaris pages and collect visual assets
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import io
+          import json
+          import mimetypes
+          import re
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse, unquote
+
+          import requests
+          from bs4 import BeautifulSoup
+          from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+          ROOT = Path('polaris-asset-audit')
+          HTML = ROOT / 'html'
+          ASSETS = ROOT / 'assets'
+          ROOT.mkdir(exist_ok=True)
+          HTML.mkdir(exist_ok=True)
+          ASSETS.mkdir(exist_ok=True)
+
+          pages = [
+              'https://polariswellbeing.com/',
+              'https://polariswellbeing.com/about-us/',
+              'https://polariswellbeing.com/who-we-are/',
+              'https://polariswellbeing.com/the-braingym/',
+              'https://polariswellbeing.com/qeeg/',
+              'https://polariswellbeing.com/neurofeedback/',
+              'https://polariswellbeing.com/initial-wellbeing-consultation/',
+              'https://polariswellbeing.com/contact/',
+          ]
+
+          s = requests.Session()
+          s.headers.update({
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36 PolarisSiteMigration/1.0',
+              'Accept-Language': 'en-GB,en;q=0.9',
+          })
+
+          records = []
+          candidate_urls = {}
+          css_urls = set()
+
+          def add_candidate(url: str, source_page: str, source_type: str, meta: dict | None = None):
+              if not url or url.startswith(('data:', 'blob:', 'javascript:')):
+                  return
+              absolute = urljoin(source_page, url.strip())
+              if not absolute.startswith(('http://', 'https://')):
+                  return
+              rec = candidate_urls.setdefault(absolute, {'url': absolute, 'sources': []})
+              rec['sources'].append({'page': source_page, 'type': source_type, **(meta or {})})
+
+          def parse_srcset(value: str):
+              for item in (value or '').split(','):
+                  part = item.strip().split(' ')[0]
+                  if part:
+                      yield part
+
+          for page_url in pages:
+              try:
+                  r = s.get(page_url, timeout=35)
+                  r.raise_for_status()
+              except Exception as exc:
+                  records.append({'page': page_url, 'error': str(exc)})
+                  continue
+              slug = urlparse(page_url).path.strip('/').replace('/', '-') or 'home'
+              (HTML / f'{slug}.html').write_text(r.text, encoding='utf-8')
+              soup = BeautifulSoup(r.text, 'lxml')
+              records.append({'page': page_url, 'status': r.status_code, 'title': soup.title.get_text(' ', strip=True) if soup.title else ''})
+
+              for link in soup.find_all('link', href=True):
+                  rel = ' '.join(link.get('rel') or [])
+                  href = link['href']
+                  if 'stylesheet' in rel:
+                      css_urls.add(urljoin(page_url, href))
+                  if any(x in rel for x in ('icon', 'apple-touch-icon', 'mask-icon')):
+                      add_candidate(href, page_url, f'link:{rel}', {'sizes': link.get('sizes', '')})
+
+              for meta in soup.find_all('meta', content=True):
+                  prop = meta.get('property') or meta.get('name') or ''
+                  if 'image' in prop.lower():
+                      add_candidate(meta['content'], page_url, f'meta:{prop}')
+
+              for img in soup.find_all('img'):
+                  meta = {
+                      'alt': img.get('alt', ''),
+                      'class': ' '.join(img.get('class') or []),
+                      'id': img.get('id', ''),
+                      'width': img.get('width', ''),
+                      'height': img.get('height', ''),
+                      'parent_class': ' '.join((img.parent.get('class') or [])) if img.parent else '',
+                  }
+                  for attr in ('src', 'data-src', 'data-lazy-src', 'data-original'):
+                      add_candidate(img.get(attr), page_url, f'img:{attr}', meta)
+                  for attr in ('srcset', 'data-srcset'):
+                      for u in parse_srcset(img.get(attr, '')):
+                          add_candidate(u, page_url, f'img:{attr}', meta)
+
+              for source in soup.find_all('source'):
+                  for attr in ('src', 'srcset'):
+                      if attr == 'srcset':
+                          for u in parse_srcset(source.get(attr, '')):
+                              add_candidate(u, page_url, 'picture:srcset')
+                      else:
+                          add_candidate(source.get(attr), page_url, 'picture:src')
+
+              for element in soup.find_all(style=True):
+                  for match in re.findall(r'url\(["\']?([^"\')]+)', element.get('style', '')):
+                      add_candidate(match, page_url, 'inline-style')
+
+              for script in soup.find_all('script'):
+                  text = script.string or script.get_text() or ''
+                  for match in re.findall(r'https?://[^\s"\']+?\.(?:png|jpe?g|webp|avif|gif|svg)(?:\?[^\s"\']*)?', text, re.I):
+                      add_candidate(match, page_url, 'script-reference')
+
+          for css_url in sorted(css_urls):
+              try:
+                  r = s.get(css_url, timeout=30)
+                  r.raise_for_status()
+                  css_text = r.text
+                  name = hashlib.sha1(css_url.encode()).hexdigest()[:12] + '.css'
+                  (HTML / name).write_text(css_text, encoding='utf-8')
+                  for match in re.findall(r'url\(["\']?([^"\')]+)', css_text):
+                      add_candidate(match, css_url, 'stylesheet-url')
+              except Exception as exc:
+                  records.append({'css': css_url, 'error': str(exc)})
+
+          manifest = []
+          seen_content = {}
+          for index, (url, item) in enumerate(sorted(candidate_urls.items()), 1):
+              parsed = urlparse(url)
+              if parsed.netloc and 'polariswellbeing.com' not in parsed.netloc:
+                  continue
+              path_name = unquote(Path(parsed.path).name) or f'asset-{index}'
+              path_name = re.sub(r'[^A-Za-z0-9._-]+', '-', path_name).strip('-')
+              if not path_name:
+                  path_name = f'asset-{index}'
+              digest = hashlib.sha1(url.encode()).hexdigest()[:8]
+              filename = f'{digest}-{path_name}'
+              target = ASSETS / filename
+              entry = {**item, 'filename': filename, 'downloaded': False}
+              try:
+                  referer = item['sources'][0]['page'] if item['sources'] else 'https://polariswellbeing.com/'
+                  r = s.get(url, headers={'Referer': referer}, timeout=45)
+                  r.raise_for_status()
+                  content = r.content
+                  sha = hashlib.sha256(content).hexdigest()
+                  if sha in seen_content:
+                      entry['duplicate_of'] = seen_content[sha]
+                  else:
+                      target.write_bytes(content)
+                      seen_content[sha] = filename
+                  entry.update({
+                      'downloaded': True,
+                      'status': r.status_code,
+                      'content_type': r.headers.get('content-type', ''),
+                      'bytes': len(content),
+                      'sha256': sha,
+                  })
+                  try:
+                      im = Image.open(io.BytesIO(content))
+                      entry['image'] = {'width': im.width, 'height': im.height, 'format': im.format, 'mode': im.mode}
+                  except Exception as exc:
+                      entry['image_error'] = str(exc)
+              except Exception as exc:
+                  entry['error'] = str(exc)
+              manifest.append(entry)
+
+          (ROOT / 'pages.json').write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding='utf-8')
+          (ROOT / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+
+          candidates = []
+          for entry in manifest:
+              if not entry.get('downloaded') or entry.get('duplicate_of'):
+                  continue
+              info = entry.get('image') or {}
+              if info.get('width', 0) < 180 or info.get('height', 0) < 120:
+                  continue
+              path = ASSETS / entry['filename']
+              try:
+                  im = Image.open(path).convert('RGB')
+                  im.thumbnail((260, 180), Image.Resampling.LANCZOS)
+                  candidates.append((entry, im.copy()))
+              except Exception:
+                  pass
+
+          cell_w, cell_h, cols = 300, 240, 4
+          rows = max(1, (len(candidates) + cols - 1) // cols)
+          sheet = Image.new('RGB', (cell_w * cols, cell_h * rows), '#f5f1e8')
+          draw = ImageDraw.Draw(sheet)
+          for i, (entry, im) in enumerate(candidates):
+              x = (i % cols) * cell_w
+              y = (i // cols) * cell_h
+              px = x + (cell_w - im.width) // 2
+              py = y + 8
+              sheet.paste(im, (px, py))
+              label = entry['filename'][:40]
+              draw.text((x + 10, y + 193), label, fill='#17362f')
+              dims = entry.get('image', {})
+              draw.text((x + 10, y + 213), f"{dims.get('width','?')} x {dims.get('height','?')}", fill='#596d66')
+          sheet.save(ROOT / 'contact-sheet.jpg', quality=88, optimize=True)
+
+          html_cards = []
+          for entry in manifest:
+              if not entry.get('downloaded') or entry.get('duplicate_of'):
+                  continue
+              info = entry.get('image') or {}
+              if not info:
+                  continue
+              src = 'assets/' + entry['filename']
+              source_summary = '<br>'.join(
+                  f"{x.get('type','')} | {x.get('alt','')} | {x.get('class','')}" for x in entry.get('sources', [])[:4]
+              )
+              html_cards.append(f'''<article><img src="{src}" loading="lazy"><h2>{entry['filename']}</h2><p>{info.get('width')} × {info.get('height')} · {entry.get('content_type','')}</p><p>{source_summary}</p><code>{entry['url']}</code></article>''')
+          (ROOT / 'contact-sheet.html').write_text('''<!doctype html><meta charset="utf-8"><title>Polaris source assets</title><style>body{font:14px system-ui;margin:24px;background:#f5f1e8;color:#17362f}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:22px}article{background:white;padding:14px;border:1px solid #ccd5d0;overflow:hidden}img{display:block;width:100%;height:220px;object-fit:contain;background:#eee}h2{font-size:14px;overflow-wrap:anywhere}p,code{font-size:11px;overflow-wrap:anywhere}</style><h1>Polaris source assets</h1><div class="grid">''' + ''.join(html_cards) + '</div>', encoding='utf-8')
+
+          summary = {
+              'pages_requested': len(pages),
+              'pages_fetched': sum(1 for x in records if x.get('status')),
+              'candidate_urls': len(candidate_urls),
+              'downloaded_records': sum(1 for x in manifest if x.get('downloaded')),
+              'unique_downloads': len(seen_content),
+              'logo_candidates': [
+                  x['filename'] for x in manifest
+                  if x.get('downloaded') and any(
+                      'logo' in str(v).lower() or 'site-icon' in str(v).lower()
+                      for srec in x.get('sources', []) for v in srec.values()
+                  )
+              ],
+          }
+          (ROOT / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Upload asset audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: polaris-asset-audit
+          path: polaris-asset-audit
+          if-no-files-found: error
+          retention-days: 7
