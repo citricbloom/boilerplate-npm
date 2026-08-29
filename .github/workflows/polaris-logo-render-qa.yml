@@ -1,0 +1,106 @@
+name: Polaris logo render QA
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-logo-render-qa.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install browser runner
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Serve preview
+        run: |
+          python3 -m http.server 8000 > /tmp/polaris-http.log 2>&1 &
+          echo $! > /tmp/polaris-http.pid
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8000/index.html >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/polaris-http.log
+          exit 1
+
+      - name: Render and verify logo-only header
+        run: |
+          mkdir -p logo-render-qa
+          node <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const cases = [
+              { name: 'mobile', viewport: { width: 390, height: 844 } },
+              { name: 'desktop', viewport: { width: 1440, height: 960 } },
+            ];
+            const results = {};
+
+            for (const item of cases) {
+              const page = await browser.newPage({ viewport: item.viewport, deviceScaleFactor: 1 });
+              await page.goto('http://127.0.0.1:8000/index.html', { waitUntil: 'networkidle' });
+              const state = await page.evaluate(() => {
+                const brand = document.querySelector('a.brand');
+                const image = brand?.querySelector('img');
+                const rect = image?.getBoundingClientRect();
+                return {
+                  duplicateBrandElementCount: document.querySelectorAll('.brand-name').length,
+                  brandVisibleText: brand?.innerText?.trim() || '',
+                  logoSource: image?.getAttribute('src') || '',
+                  logoRenderedWidth: rect?.width || 0,
+                  logoRenderedHeight: rect?.height || 0,
+                  logoNaturalWidth: image?.naturalWidth || 0,
+                  logoNaturalHeight: image?.naturalHeight || 0,
+                };
+              });
+
+              if (state.duplicateBrandElementCount !== 0) {
+                throw new Error(`${item.name}: duplicate .brand-name remains`);
+              }
+              if (state.brandVisibleText !== '') {
+                throw new Error(`${item.name}: unexpected visible text beside logo: ${state.brandVisibleText}`);
+              }
+              if (state.logoRenderedWidth < 100 || state.logoRenderedHeight < 25) {
+                throw new Error(`${item.name}: complete logo is not rendered at a usable size: ${JSON.stringify(state)}`);
+              }
+              if (state.logoNaturalWidth <= state.logoNaturalHeight) {
+                throw new Error(`${item.name}: logo asset does not appear to be the complete horizontal logo: ${JSON.stringify(state)}`);
+              }
+
+              await page.screenshot({ path: `logo-render-qa/${item.name}.png`, fullPage: false });
+              results[item.name] = state;
+              await page.close();
+            }
+
+            fs.writeFileSync('logo-render-qa/results.json', JSON.stringify(results, null, 2));
+            await browser.close();
+          })().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          JS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-logo-render-qa
+          path: logo-render-qa
+          retention-days: 7
