@@ -1,0 +1,97 @@
+name: Apply Polaris therapy hero and full logo
+
+on:
+  push:
+    branches:
+      - polaris-preview-working
+    paths:
+      - .github/workflows/polaris-apply-therapy.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview-working
+          fetch-depth: 0
+
+      - name: Decode supplied therapy image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .asset-payload/therapy-hero.part0 .asset-payload/therapy-hero.part1 | base64 --decode > assets/hero-mobile.webp
+          cp assets/hero-mobile.webp assets/hero-desktop.webp
+          file assets/hero-mobile.webp
+          test "$(stat -c %s assets/hero-mobile.webp)" -gt 9000
+
+      - name: Restore complete Polaris logo from current website
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            https://polariswellbeing.com/wp-content/uploads/2024/02/cropped-polaris-logo.png \
+            --output assets/polaris-mark.png
+          file assets/polaris-mark.png
+          python - <<'PY'
+          import struct
+          with open('assets/polaris-mark.png', 'rb') as f:
+              header = f.read(24)
+          assert header[:8] == b'\x89PNG\r\n\x1a\n'
+          width, height = struct.unpack('>II', header[16:24])
+          assert (width, height) == (285, 100), (width, height)
+          print('Full logo verified:', width, height)
+          PY
+
+      - name: Apply exact website edits
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          header_cta = re.compile(r'\s*<a class="button header-cta" href="talk-to-our-team\.html">Talk to our team</a>')
+          for path in Path('.').glob('*.html'):
+              text = path.read_text(encoding='utf-8')
+              text = header_cta.sub('', text)
+              path.write_text(text, encoding='utf-8')
+
+          index = Path('index.html')
+          text = index.read_text(encoding='utf-8')
+          text = text.replace(
+              'alt="Two comfortable chairs and a small table in a Polaris consultation room"',
+              'alt="A stylised therapy conversation in a warm consultation room"'
+          )
+          text = re.sub(r'\s*<figcaption class="hero-caption">.*?</figcaption>', '', text)
+          index.write_text(text, encoding='utf-8')
+          PY
+          rm -rf .asset-payload
+
+      - name: Verify requested scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R --include='*.html' -n 'class="button header-cta"' .; then
+            echo 'Sticky header CTA remains' >&2
+            exit 1
+          fi
+          grep -q 'class="mobile-contact"' index.html
+          grep -q 'assets/hero-mobile.webp' index.html
+          grep -q 'assets/hero-desktop.webp' index.html
+          if grep -q 'A real room at Polaris' index.html; then
+            echo 'Old chair-image caption remains' >&2
+            exit 1
+          fi
+
+      - name: Commit completed website edits
+        shell: bash
+        run: |
+          git config user.name 'Polaris Preview Bot'
+          git config user.email '78444086+citricbloom@users.noreply.github.com'
+          git add -A
+          git commit -m 'Publish therapy hero, full logo, and remove sticky header CTA'
+          git push origin HEAD:polaris-preview-working
