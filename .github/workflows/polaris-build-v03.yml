@@ -1,0 +1,114 @@
+name: Polaris mobile-first preview v0.3
+
+on:
+  push:
+    branches: [polaris-preview]
+    paths:
+      - scripts/build_polaris_v03.py
+      - .github/workflows/polaris-build-v03.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out preview branch
+        uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build and browser dependencies
+        run: |
+          python -m pip install --disable-pip-version-check requests beautifulsoup4 pillow lxml numpy opencv-python-headless playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Build the mobile-first site using current Polaris assets
+        run: python scripts/build_polaris_v03.py
+
+      - name: Serve and exercise the rendered site
+        run: |
+          python -m http.server 8080 >/tmp/polaris-http.log 2>&1 &
+          echo $! >/tmp/polaris-http.pid
+          python - <<'PY'
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          out = Path('review-v03')
+          out.mkdir(exist_ok=True)
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+
+              mobile = browser.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=1, is_mobile=True, has_touch=True)
+              mobile.goto('http://127.0.0.1:8080/index.html', wait_until='networkidle')
+              mobile.screenshot(path=str(out / '01-mobile-home.png'), full_page=True)
+              h1 = mobile.locator('h1').first
+              assert h1.is_visible()
+              assert 'Your life is connected' in h1.inner_text()
+              hero_cta = mobile.locator('.hero .button')
+              assert hero_cta.is_visible()
+              box = hero_cta.bounding_box()
+              assert box and box['y'] < 844, f'Hero CTA not in first viewport: {box}'
+              mobile.locator('.menu-button').click()
+              assert mobile.locator('.mobile-menu').evaluate("el => el.classList.contains('is-open')")
+              mobile.screenshot(path=str(out / '02-mobile-menu.png'))
+              mobile.locator('.menu-button').click()
+              mobile.locator('.mobile-cta .button').click()
+              mobile.wait_for_url('**/talk-to-our-team.html')
+              assert mobile.locator('.choice').count() == 4
+              mobile.screenshot(path=str(out / '03-mobile-contact.png'), full_page=True)
+
+              desktop = browser.new_page(viewport={"width": 1440, "height": 960})
+              desktop.goto('http://127.0.0.1:8080/index.html', wait_until='networkidle')
+              desktop.screenshot(path=str(out / '04-desktop-home.png'), full_page=True)
+              assert desktop.locator('.desktop-nav').is_visible()
+              desktop.locator('.desktop-nav a', has_text='BrainGym').click()
+              desktop.wait_for_url('**/braingym.html')
+              assert desktop.locator('h1').is_visible()
+              desktop.screenshot(path=str(out / '05-desktop-braingym.png'), full_page=True)
+
+              browser.close()
+          PY
+
+      - name: Validate built files and wording
+        run: |
+          test -s index.html
+          test -s talk-to-our-team.html
+          test -s services.html
+          test -s braingym.html
+          test -s assets/polaris-logo.png
+          test -s assets/polaris-hero.webp
+          test -s assets/polaris-space.webp
+          test -s assets/polaris-braingym.webp
+          ! grep -Rin "psychology-led" index.html talk-to-our-team.html services.html braingym.html
+          grep -q "Come in, take a seat" index.html
+          grep -q "Initial Wellbeing Consultation within 48 hours" index.html
+
+      - name: Publish the tested preview to the branch
+        run: |
+          git config user.name "Polaris Preview Bot"
+          git config user.email "78444086+citricbloom@users.noreply.github.com"
+          git add index.html talk-to-our-team.html services.html braingym.html assets/
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "Publish mobile-first Polaris preview v0.3 [skip ci]"
+            git push origin HEAD:polaris-preview
+          fi
+
+      - name: Upload browser review evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: polaris-preview-v03-browser-review
+          path: |
+            review-v03
+            assets/source-provenance.json
+          retention-days: 14
