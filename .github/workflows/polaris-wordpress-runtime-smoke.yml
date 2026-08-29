@@ -1,0 +1,60 @@
+name: Polaris WordPress runtime smoke
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-wordpress-runtime-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Start WordPress Playground CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes @wp-playground/cli@latest server --blueprint=wordpress-dist/polaris-wordpress-playground-bundle-v1.0.1.zip --port=9400 > /tmp/polaris-playground.log 2>&1 &
+          echo $! > /tmp/polaris-playground.pid
+          for i in {1..120}; do
+            if curl -fsS http://127.0.0.1:9400/ > /tmp/polaris-home.html; then
+              break
+            fi
+            if ! kill -0 "$(cat /tmp/polaris-playground.pid)" 2>/dev/null; then
+              cat /tmp/polaris-playground.log
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s /tmp/polaris-home.html
+          grep -q 'Your life is connected' /tmp/polaris-home.html
+          grep -q 'A colourful, welcoming therapy room' /tmp/polaris-home.html
+          if grep -q 'class="button header-cta"' /tmp/polaris-home.html; then
+            echo 'Removed sticky header CTA returned' >&2
+            exit 1
+          fi
+          grep -q 'class="mobile-contact"' /tmp/polaris-home.html
+          echo 'WordPress runtime smoke passed.'
+          tail -80 /tmp/polaris-playground.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polaris-wordpress-runtime-smoke
+          path: |
+            /tmp/polaris-playground.log
+            /tmp/polaris-home.html
+          retention-days: 7
