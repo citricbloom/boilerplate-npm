@@ -1,0 +1,140 @@
+name: Polaris header CTA and full logo fix
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-header-logo-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+          fetch-depth: 0
+
+      - name: Remove only the top sticky CTA and restore the complete Polaris logo
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Use the complete original Polaris logo from the current Polaris website.
+          curl --fail --location --retry 3 \
+            'https://polariswellbeing.com/wp-content/uploads/2024/02/cropped-polaris-logo.png' \
+            --output assets/polaris-mark.png
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          # Remove only the CTA inside the sticky site header. Keep the persistent
+          # mobile bottom CTA and all in-page appointment buttons.
+          header_cta = re.compile(
+              r'\s*<a class="button header-cta" href="talk-to-our-team\.html">Talk to our team</a>'
+          )
+
+          changed = []
+          for path in sorted(Path('.').glob('*.html')):
+              source = path.read_text(encoding='utf-8')
+              updated = header_cta.sub('', source)
+              if updated != source:
+                  path.write_text(updated, encoding='utf-8')
+                  changed.append(str(path))
+
+          css_path = Path('styles.css')
+          css = css_path.read_text(encoding='utf-8')
+          marker = '/* Founder correction: no CTA inside sticky header; complete logo retained */'
+          if marker not in css:
+              css += r'''
+
+/* Founder correction: no CTA inside sticky header; complete logo retained */
+.header-cta { display: none !important; }
+.brand {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.brand img {
+  display: block !important;
+  width: auto !important;
+  height: 54px !important;
+  max-width: 180px !important;
+  max-height: 54px !important;
+  object-fit: contain !important;
+  object-position: left center !important;
+}
+.footer-brand {
+  display: inline-flex;
+  width: fit-content;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--cream);
+}
+.footer-brand img {
+  display: block !important;
+  width: auto !important;
+  height: 68px !important;
+  max-width: 210px !important;
+  max-height: 68px !important;
+  object-fit: contain !important;
+  object-position: left center !important;
+}
+
+@media (max-width: 759px) {
+  .brand img {
+    width: auto !important;
+    height: 52px !important;
+    max-width: 150px !important;
+    max-height: 52px !important;
+  }
+  .footer-brand img {
+    width: auto !important;
+    height: 62px !important;
+    max-width: 190px !important;
+    max-height: 62px !important;
+  }
+}
+'''
+              css_path.write_text(css, encoding='utf-8')
+              changed.append(str(css_path))
+
+          print('Changed:')
+          for item in changed:
+              print(' -', item)
+          PY
+
+      - name: Verify exact CTA scope and logo asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R --include='*.html' -n 'class="button header-cta"' .; then
+            echo 'Top sticky header CTA still exists' >&2
+            exit 1
+          fi
+          grep -R --include='*.html' -q 'class="mobile-contact"' .
+          grep -R --include='*.html' -q '>Talk to our team</a>' .
+          python - <<'PY'
+          from PIL import Image
+          image = Image.open('assets/polaris-mark.png')
+          assert image.width > image.height * 2, image.size
+          assert image.width >= 250 and image.height >= 90, image.size
+          print('Complete logo dimensions:', image.size)
+          PY
+
+      - name: Commit website edits
+        shell: bash
+        run: |
+          git config user.name 'Polaris Preview Bot'
+          git config user.email '78444086+citricbloom@users.noreply.github.com'
+          git add -- '*.html' styles.css assets/polaris-mark.png
+          if git diff --cached --quiet; then
+            echo 'No changes required.'
+          else
+            git commit -m 'Remove sticky header CTA and restore complete Polaris logo'
+            git push origin HEAD:polaris-preview
+          fi
