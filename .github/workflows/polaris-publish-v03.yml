@@ -1,0 +1,251 @@
+name: Publish Polaris v0.3 mobile-first preview
+
+on:
+  push:
+    branches: [polaris-preview]
+    paths:
+      - .github/workflows/polaris-publish-v03.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install image and validation dependencies
+        run: python -m pip install --disable-pip-version-check requests pillow beautifulsoup4 lxml
+
+      - name: Restore reviewed site source
+        shell: bash
+        run: |
+          cat .polaris-payload/part-* | base64 --decode | tar -xzf -
+
+      - name: Pull and prepare approved Polaris source assets
+        shell: bash
+        run: |
+          python - <<'PYASSETS'
+          from __future__ import annotations
+          import hashlib
+          import io
+          from pathlib import Path
+          import requests
+          from PIL import Image, ImageEnhance, ImageOps
+
+          out = Path('assets')
+          out.mkdir(exist_ok=True)
+          s = requests.Session()
+          s.headers.update({
+              'User-Agent': 'Mozilla/5.0 PolarisWebsiteMigration/1.0',
+              'Referer': 'https://polariswellbeing.com/',
+          })
+
+          sources = {
+              'logo': 'https://polariswellbeing.com/wp-content/uploads/2024/02/cropped-polaris-logo.png',
+              'hero_desktop': 'https://polariswellbeing.com/wp-content/uploads/2024/03/WhatsApp-Image-2024-03-12-at-11.36.10-1-1536x1152.jpeg',
+              'hero_mobile': 'https://polariswellbeing.com/wp-content/uploads/2024/03/WhatsApp-Image-2024-03-12-at-11.35.00-1.jpeg',
+              'space': 'https://polariswellbeing.com/wp-content/uploads/2024/03/WhatsApp-Image-2024-03-12-at-11.35.58-1536x1152.jpeg',
+              'braingym': 'https://polariswellbeing.com/wp-content/uploads/2024/10/neurofeedback4-png.avif',
+              'cher': 'https://polariswellbeing.com/wp-content/uploads/2025/07/Pol24-scaled-e1751527980744.avif',
+              'laura': 'https://polariswellbeing.com/wp-content/uploads/2025/07/Pol20-scaled-e1751528095193.avif',
+              'stephanie': 'https://polariswellbeing.com/wp-content/uploads/2025/05/Stephanie-e1751526848681.avif',
+              'karen': 'https://polariswellbeing.com/wp-content/uploads/2025/10/6._karen_profile_picture_.avif',
+          }
+
+          raw = {}
+          checksums = {}
+          for name, url in sources.items():
+              response = s.get(url, timeout=60)
+              response.raise_for_status()
+              raw[name] = Image.open(io.BytesIO(response.content)).copy()
+              checksums[name] = hashlib.sha256(response.content).hexdigest()
+
+          def grade(im, brightness=1.03, contrast=1.06, colour=0.92, sharp=1.1):
+              im = ImageEnhance.Brightness(im).enhance(brightness)
+              im = ImageEnhance.Contrast(im).enhance(contrast)
+              im = ImageEnhance.Color(im).enhance(colour)
+              return ImageEnhance.Sharpness(im).enhance(sharp)
+
+          def save_webp(im, filename, size, quality=78, centring=(0.5, 0.5)):
+              im = ImageOps.fit(im.convert('RGB'), size, method=Image.Resampling.LANCZOS, centering=centring)
+              im.save(out / filename, 'WEBP', quality=quality, method=6)
+
+          logo = raw['logo'].convert('RGBA').crop((0, 0, 101, 100))
+          canvas = Image.new('RGBA', (112, 112), (0, 0, 0, 0))
+          logo.thumbnail((100, 100), Image.Resampling.LANCZOS)
+          canvas.alpha_composite(logo, ((112-logo.width)//2, (112-logo.height)//2))
+          canvas.save(out / 'polaris-mark.png', optimize=True)
+          canvas.resize((64, 64), Image.Resampling.LANCZOS).save(out / 'favicon.png', optimize=True)
+
+          save_webp(grade(raw['hero_desktop'], 1.08, 1.03, 0.86, 1.06), 'hero-desktop.webp', (1200, 900), 78)
+          mobile = raw['hero_mobile'].crop((0, 260, 1200, 1600))
+          save_webp(grade(mobile, 1.08, 1.02, 0.88, 1.06), 'hero-mobile.webp', (900, 1050), 79)
+          save_webp(grade(raw['space'], 1.08, 1.02, 0.82, 1.05), 'polaris-space.webp', (1100, 800), 76)
+          cap = raw['braingym'].convert('RGB').crop((0, 48, 355, 485))
+          save_webp(grade(cap, 1.04, 1.04, 0.90, 1.12), 'braingym-cap.webp', (720, 820), 79)
+
+          portraits = [
+              ('cher', 'cher.webp', (0.5, 0.44)),
+              ('laura', 'laura.webp', (0.5, 0.42)),
+              ('stephanie', 'stephanie.webp', (0.5, 0.45)),
+              ('karen', 'karen.webp', (0.5, 0.42)),
+          ]
+          for key, filename, centring in portraits:
+              save_webp(grade(raw[key], 1.04, 1.02, 0.90, 1.08), filename, (640, 760), 78, centring)
+
+          lines = ['# Polaris preview asset provenance', '', 'All selected visual assets were pulled from the current public Polaris Wellbeing website for this controlled redesign preview.', '']
+          for name, url in sources.items():
+              lines += [f'- **{name}**: {url}', f'  - Source SHA-256: `{checksums[name]}`']
+          Path('ASSET-PROVENANCE.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PYASSETS
+
+      - name: Validate site structure and language
+        shell: bash
+        run: |
+          node --check site.js
+          if grep -Rni --include='*.html' --include='*.css' 'psychology-led' .; then
+            echo 'Rejected clinical positioning phrase found.' >&2
+            exit 1
+          fi
+          python - <<'PYVALIDATE'
+          from pathlib import Path
+          from urllib.parse import urldefrag
+          from bs4 import BeautifulSoup
+
+          root = Path('.')
+          errors = []
+          for page in root.glob('*.html'):
+              soup = BeautifulSoup(page.read_text(encoding='utf-8'), 'lxml')
+              if not soup.find('main', id='main'):
+                  errors.append(f'{page}: missing main landmark')
+              if not soup.title:
+                  errors.append(f'{page}: missing title')
+              for image in soup.find_all('img', src=True):
+                  if image.get('alt') is None:
+                      errors.append(f'{page}: image missing alt')
+                  if not (root / image['src']).exists():
+                      errors.append(f'{page}: missing {image["src"]}')
+              for link in soup.find_all('a', href=True):
+                  href = link['href']
+                  if href.startswith(('http:', 'https:', 'tel:', 'mailto:', '#')):
+                      continue
+                  target, fragment = urldefrag(href)
+                  target_path = root / target
+                  if not target_path.exists():
+                      errors.append(f'{page}: missing link {href}')
+                  elif fragment:
+                      target_soup = BeautifulSoup(target_path.read_text(encoding='utf-8'), 'lxml')
+                      if not target_soup.find(id=fragment):
+                          errors.append(f'{page}: missing fragment {href}')
+          if errors:
+              raise SystemExit('\n'.join(errors))
+          print('Static validation passed')
+          PYVALIDATE
+
+      - name: Install Chromium for physical mobile-first QA
+        shell: bash
+        run: |
+          mkdir -p /tmp/polaris-qa
+          npm install --prefix /tmp/polaris-qa --no-save playwright@1.55.0
+          /tmp/polaris-qa/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Exercise the rendered site in Chromium
+        shell: bash
+        run: |
+          mkdir -p qa-evidence
+          python -m http.server 4173 --bind 127.0.0.1 >/tmp/polaris-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID || true' EXIT
+          sleep 2
+          NODE_PATH=/tmp/polaris-qa/node_modules node <<'NODEQA'
+          const fs = require('fs');
+          const { chromium } = require('playwright');
+          const assert = (condition, message) => { if (!condition) throw new Error(message); };
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const results = [];
+
+            async function checkViewport(name, viewport) {
+              const context = await browser.newContext({ viewport, isMobile: name === 'mobile', hasTouch: name === 'mobile' });
+              const page = await context.newPage();
+              await page.goto('http://127.0.0.1:4173/index.html', { waitUntil: 'networkidle' });
+              assert(await page.locator('h1').innerText() === 'Your life is connected. Your care should be too.', `${name} hero copy mismatch`);
+              const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+              assert(overflow <= 1, `${name} has horizontal overflow of ${overflow}px`);
+              const broken = await page.locator('img').evaluateAll(imgs => imgs.filter(i => !i.complete || i.naturalWidth === 0).length);
+              assert(broken === 0, `${name} has ${broken} broken images`);
+              await page.screenshot({ path: `qa-evidence/${name}-hero.png`, fullPage: false });
+              await page.screenshot({ path: `qa-evidence/${name}-full.png`, fullPage: true });
+
+              if (name === 'mobile') {
+                await page.locator('[data-menu-toggle]').click();
+                assert(await page.locator('[data-mobile-nav]').isVisible(), 'Mobile menu did not open');
+                await page.screenshot({ path: 'qa-evidence/mobile-menu.png', fullPage: false });
+                await page.keyboard.press('Escape');
+                assert(!(await page.locator('[data-mobile-nav]').isVisible()), 'Mobile menu did not close with Escape');
+                await page.locator('.mobile-contact').click();
+                await page.waitForURL('**/talk-to-our-team.html');
+                assert(await page.locator('h1').innerText() === 'How would you like to talk?', 'Contact page did not load');
+                await page.screenshot({ path: 'qa-evidence/mobile-contact.png', fullPage: false });
+                await page.locator('[data-reveal-request]').first().click();
+                assert(await page.locator('#request-form').isVisible(), 'Request form did not reveal');
+                await page.screenshot({ path: 'qa-evidence/mobile-request-form.png', fullPage: false });
+              } else {
+                await page.locator('.header-cta').click();
+                await page.waitForURL('**/talk-to-our-team.html');
+                await page.screenshot({ path: 'qa-evidence/desktop-contact.png', fullPage: false });
+              }
+              results.push({ name, viewport, overflow, brokenImages: broken, status: 'pass' });
+              await context.close();
+            }
+
+            await checkViewport('mobile', { width: 390, height: 844 });
+            await checkViewport('desktop', { width: 1440, height: 960 });
+
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+            const page = await context.newPage();
+            const pages = ['index.html','how-we-can-help.html','braingym.html','our-approach.html','our-team.html','about-polaris.html','talk-to-our-team.html'];
+            for (const path of pages) {
+              const response = await page.goto(`http://127.0.0.1:4173/${path}`, { waitUntil: 'domcontentloaded' });
+              assert(response && response.ok(), `${path} returned a bad response`);
+              const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+              assert(overflow <= 1, `${path} has mobile horizontal overflow`);
+            }
+            await context.close();
+            fs.writeFileSync('qa-evidence/results.json', JSON.stringify(results, null, 2));
+            await browser.close();
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODEQA
+
+      - name: Upload physical QA evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: polaris-v03-physical-qa
+          path: qa-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish reviewed preview to the branch
+        shell: bash
+        run: |
+          git config user.name 'Polaris Preview Bot'
+          git config user.email '78444086+citricbloom@users.noreply.github.com'
+          git add index.html how-we-can-help.html braingym.html our-approach.html our-team.html about-polaris.html talk-to-our-team.html styles.css site.js assets ASSET-PROVENANCE.md
+          if git diff --cached --quiet; then
+            echo 'Preview already current.'
+          else
+            git commit -m 'Publish mobile-first Polaris Wellbeing preview v0.3'
+            git push origin HEAD:polaris-preview
+          fi
