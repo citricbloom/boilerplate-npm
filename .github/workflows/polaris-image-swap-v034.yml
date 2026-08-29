@@ -1,0 +1,219 @@
+name: Polaris image swap v0.3.4
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-image-swap-v034.yml
+
+permissions:
+  contents: write
+
+jobs:
+  swap-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+          fetch-depth: 0
+
+      - name: Download approved responsive image crops
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            'https://cdn-editing-temp.picsart.com/editing-temp/68c93117-56be-478b-9877-a5b77098f593.webp' \
+            --output assets/hero-mobile.webp
+          curl --fail --location --retry 3 \
+            'https://cdn-editing-temp.picsart.com/editing-temp/a46be3cf-39b0-4361-b49a-ade5ae549f39.webp' \
+            --output assets/hero-desktop.webp
+          curl --fail --location --retry 3 \
+            'https://cdn-editing-temp.picsart.com/editing-temp/7623adfd-da8a-4912-8a6b-93015da2fdac.webp' \
+            --output assets/polaris-space.webp
+
+      - name: Update semantic image descriptions and intrinsic dimensions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('index.html')
+          html = path.read_text(encoding='utf-8')
+
+          html = html.replace(
+              'alt="A stylised therapy conversation in a warm consultation room" width="900" height="1050"',
+              'alt="A colourful, welcoming therapy room" width="600" height="700"'
+          )
+          html = html.replace(
+              'alt="A relaxed shared space inside Polaris Wellbeing" width="1100" height="800"',
+              'alt="A stylised therapy scene in a warm consultation room" width="760" height="760"'
+          )
+
+          path.write_text(html, encoding='utf-8')
+
+          js_path = Path('site.js')
+          js = js_path.read_text(encoding='utf-8')
+          js = js.replace(
+              "heroImage.alt = 'A stylised therapy scene in a warm consultation room';",
+              "heroImage.alt = 'A colourful, welcoming therapy room';"
+          )
+          js_path.write_text(js, encoding='utf-8')
+          PY
+
+      - name: Verify asset formats and exact image mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import struct
+
+          def webp_size(path):
+              data = Path(path).read_bytes()
+              assert data[:4] == b'RIFF' and data[8:12] == b'WEBP', f'{path}: not WebP'
+              chunk = data[12:16]
+              if chunk == b'VP8 ':
+                  start = data.find(b'\x9d\x01\x2a')
+                  assert start >= 0
+                  width, height = struct.unpack('<HH', data[start + 3:start + 7])
+                  return width & 0x3fff, height & 0x3fff
+              if chunk == b'VP8L':
+                  b0, b1, b2, b3 = data[21:25]
+                  width = 1 + (((b2 & 0x3f) << 8) | b1)
+                  height = 1 + ((b3 << 6) | (b2 >> 6))
+                  return width, height
+              if chunk == b'VP8X':
+                  width = 1 + int.from_bytes(data[24:27], 'little')
+                  height = 1 + int.from_bytes(data[27:30], 'little')
+                  return width, height
+              raise AssertionError(f'{path}: unsupported WebP chunk {chunk!r}')
+
+          expected = {
+              'assets/hero-mobile.webp': (600, 700),
+              'assets/hero-desktop.webp': (760, 760),
+              'assets/polaris-space.webp': (760, 760),
+          }
+          for path, dimensions in expected.items():
+              actual = webp_size(path)
+              assert actual == dimensions, (path, actual, dimensions)
+              print(path, actual, Path(path).stat().st_size)
+
+          html = Path('index.html').read_text(encoding='utf-8')
+          assert 'A colourful, welcoming therapy room' in html
+          assert 'A stylised therapy scene in a warm consultation room' in html
+          assert 'class="button header-cta"' not in html
+          assert 'class="mobile-contact"' in html
+          PY
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Chromium browser runner
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Serve and physically test the edited site
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p image-swap-qa
+          python3 -m http.server 8000 > /tmp/polaris-http.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8000/index.html >/dev/null && break
+            sleep 1
+          done
+
+          node <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const cases = [
+              { name: 'mobile', viewport: { width: 390, height: 844 }, expectedHero: [600, 700] },
+              { name: 'desktop', viewport: { width: 1440, height: 960 }, expectedHero: [760, 760] },
+            ];
+            const results = {};
+
+            for (const testCase of cases) {
+              const page = await browser.newPage({ viewport: testCase.viewport, deviceScaleFactor: 1 });
+              await page.goto('http://127.0.0.1:8000/index.html', { waitUntil: 'networkidle' });
+
+              const state = await page.evaluate(() => {
+                const hero = document.querySelector('.hero-media img');
+                const lower = document.querySelector('.polaris-photo img');
+                const heroRect = hero.getBoundingClientRect();
+                const lowerRect = lower.getBoundingClientRect();
+                return {
+                  headerCtaCount: document.querySelectorAll('.site-header .header-cta').length,
+                  bottomCtaCount: document.querySelectorAll('.mobile-contact').length,
+                  hero: {
+                    src: hero.currentSrc,
+                    naturalWidth: hero.naturalWidth,
+                    naturalHeight: hero.naturalHeight,
+                    renderedWidth: heroRect.width,
+                    renderedHeight: heroRect.height,
+                    alt: hero.alt,
+                  },
+                  lower: {
+                    src: lower.currentSrc,
+                    naturalWidth: lower.naturalWidth,
+                    naturalHeight: lower.naturalHeight,
+                    renderedWidth: lowerRect.width,
+                    renderedHeight: lowerRect.height,
+                    alt: lower.alt,
+                  },
+                  logoLoaded: document.querySelector('.brand img')?.naturalWidth > 0,
+                };
+              });
+
+              if (state.headerCtaCount !== 0) throw new Error(`${testCase.name}: sticky header CTA returned`);
+              if (state.bottomCtaCount !== 1) throw new Error(`${testCase.name}: bottom CTA missing`);
+              if (!state.logoLoaded) throw new Error(`${testCase.name}: logo failed to load`);
+              if (state.hero.naturalWidth !== testCase.expectedHero[0] || state.hero.naturalHeight !== testCase.expectedHero[1]) {
+                throw new Error(`${testCase.name}: incorrect hero asset ${JSON.stringify(state.hero)}`);
+              }
+              if (state.lower.naturalWidth !== 760 || state.lower.naturalHeight !== 760) {
+                throw new Error(`${testCase.name}: incorrect lower asset ${JSON.stringify(state.lower)}`);
+              }
+              if (state.hero.alt !== 'A colourful, welcoming therapy room') {
+                throw new Error(`${testCase.name}: incorrect hero description`);
+              }
+              if (state.lower.alt !== 'A stylised therapy scene in a warm consultation room') {
+                throw new Error(`${testCase.name}: incorrect lower description`);
+              }
+
+              await page.screenshot({ path: `image-swap-qa/${testCase.name}-top.png`, fullPage: false });
+              await page.locator('.polaris-photo').scrollIntoViewIfNeeded();
+              await page.screenshot({ path: `image-swap-qa/${testCase.name}-lower.png`, fullPage: false });
+              results[testCase.name] = state;
+              await page.close();
+            }
+
+            fs.writeFileSync('image-swap-qa/results.json', JSON.stringify(results, null, 2));
+            await browser.close();
+          })().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          JS
+
+      - name: Commit approved website image swap
+        shell: bash
+        run: |
+          git config user.name 'Polaris Preview Bot'
+          git config user.email '78444086+citricbloom@users.noreply.github.com'
+          git add index.html site.js assets/hero-mobile.webp assets/hero-desktop.webp assets/polaris-space.webp
+          git commit -m 'Place colourful therapy room in hero and move therapy scene lower'
+          git push origin HEAD:polaris-preview
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polaris-image-swap-v034-qa
+          path: image-swap-qa
+          retention-days: 7
