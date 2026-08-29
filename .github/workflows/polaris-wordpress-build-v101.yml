@@ -1,0 +1,218 @@
+name: Build Polaris WordPress parity package v1.0.1
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-wordpress-build-v101.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+          fetch-depth: 0
+
+      - name: Reconstruct controlled WordPress source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/polaris-wp-build
+          mkdir -p /tmp/polaris-wp-build
+          curl --fail --location --retry 3 \
+            'https://cdn-editing-temp.picsart.com/editing-temp/1bc9bd58-ab1e-4295-a04f-9665148ae82c.x-tar' \
+            --output /tmp/polaris-wp-build/payload.tar.gz
+          echo '39f3d086e9cd21b8083fff017a77a45e775188d2fe4eb7b0d7358e1a7ce2688d  /tmp/polaris-wp-build/payload.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/polaris-wp-build/payload.tar.gz -C /tmp/polaris-wp-build
+          mkdir -p /tmp/polaris-wp-build/polaris-wellbeing/assets/images
+          cp assets/braingym-cap.webp assets/cher.webp assets/favicon.png \
+             assets/hero-desktop.webp assets/hero-mobile.webp assets/karen.webp \
+             assets/laura.webp assets/polaris-mark.png assets/polaris-space.webp \
+             assets/stephanie.webp /tmp/polaris-wp-build/polaris-wellbeing/assets/images/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Static package validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/polaris-wp-build
+          test -f polaris-wellbeing/style.css
+          test -f polaris-wellbeing/functions.php
+          test -f polaris-core/polaris-core.php
+          find polaris-wellbeing polaris-core -name '*.php' -print0 | xargs -0 -n1 php -l
+          node --check polaris-wellbeing/assets/js/site.js
+          node --check polaris-core/admin.js
+          grep -q 'Theme Name: Polaris Wellbeing' polaris-wellbeing/style.css
+          grep -q 'Version: 1.0.1' polaris-wellbeing/style.css
+          grep -q 'Plugin Name: Polaris Core' polaris-core/polaris-core.php
+          grep -q 'Version: 1.0.1' polaris-core/polaris-core.php
+          grep -q 'data-polaris-form' polaris-wellbeing/static/talk-to-our-team.html
+          grep -q 'aria-live="polite"' polaris-wellbeing/static/talk-to-our-team.html
+          grep -q 'A colourful, welcoming therapy room' polaris-wellbeing/static/home.html
+          grep -q 'A stylised therapy scene in a warm consultation room' polaris-wellbeing/static/home.html
+          if grep -R -n -E 'data-preview-form|No form data is transmitted|Polaris Wellbeing preview|psychology-led|cdn-editing-temp|raw\.githack' polaris-wellbeing polaris-core; then
+            echo 'Preview-only, rejected or temporary content remains in production package' >&2
+            exit 1
+          fi
+          if grep -R -n 'class="button header-cta"' polaris-wellbeing/static; then
+            echo 'Removed sticky header CTA returned' >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+
+          expected = {'home','how-we-can-help','braingym','our-approach','our-team','about-polaris','talk-to-our-team'}
+          actual = {p.stem for p in Path('polaris-wellbeing/static').glob('*.html')}
+          assert actual == expected, (actual, expected)
+          for p in Path('polaris-wellbeing/static').glob('*.html'):
+              text = p.read_text(encoding='utf-8')
+              assert '<html {{language_attributes}}>' in text
+              assert '{{wp_head}}' in text and '{{wp_footer}}' in text
+              assert text.count('{{wp_head}}') == 1 and text.count('{{wp_footer}}') == 1
+              assert 'aria-hidden="true" class="mobile-nav"' in text
+
+          def png_size(path):
+              data = Path(path).read_bytes()[:24]
+              assert data[:8] == b'\x89PNG\r\n\x1a\n'
+              return struct.unpack('>II', data[16:24])
+
+          def webp_size(path):
+              data = Path(path).read_bytes()
+              assert data[:4] == b'RIFF' and data[8:12] == b'WEBP'
+              chunk = data[12:16]
+              if chunk == b'VP8 ':
+                  start = data.find(b'\x9d\x01\x2a')
+                  width, height = struct.unpack('<HH', data[start + 3:start + 7])
+                  return width & 0x3fff, height & 0x3fff
+              if chunk == b'VP8L':
+                  b0, b1, b2, b3 = data[21:25]
+                  return 1 + (((b2 & 0x3f) << 8) | b1), 1 + ((b3 << 6) | (b2 >> 6))
+              if chunk == b'VP8X':
+                  return 1 + int.from_bytes(data[24:27], 'little'), 1 + int.from_bytes(data[27:30], 'little')
+              raise AssertionError((path, chunk))
+
+          images = Path('polaris-wellbeing/assets/images')
+          assert png_size(images/'polaris-mark.png') == (285, 100)
+          assert webp_size(images/'hero-mobile.webp') == (600, 700)
+          assert webp_size(images/'hero-desktop.webp') == (760, 760)
+          assert webp_size(images/'polaris-space.webp') == (760, 760)
+          print('Controlled templates and image geometry validated.')
+          PY
+
+      - name: Build installable packages and Playground bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/polaris-wp-build
+          rm -rf package wordpress-dist
+          mkdir -p package wordpress-dist
+          zip -qr package/polaris-wellbeing-theme-v1.0.1.zip polaris-wellbeing
+          zip -qr package/polaris-core-v1.0.1.zip polaris-core
+
+          cat > package/blueprint.json <<'JSON'
+          {
+            "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+            "meta": {
+              "title": "Polaris Wellbeing WordPress parity QA",
+              "description": "Controlled WordPress implementation of the approved Polaris v0.3.4 mobile-first site.",
+              "author": "Polaris Wellbeing"
+            },
+            "landingPage": "/",
+            "preferredVersions": { "php": "8.3", "wp": "latest" },
+            "features": { "networking": true },
+            "steps": [
+              {
+                "step": "defineWpConfigConsts",
+                "consts": {
+                  "WP_ENVIRONMENT_TYPE": "local",
+                  "POLARIS_QA_MODE": true,
+                  "WP_DEBUG": true,
+                  "WP_DEBUG_LOG": true,
+                  "WP_DEBUG_DISPLAY": false,
+                  "WP_DISABLE_FATAL_ERROR_HANDLER": true
+                }
+              },
+              { "step": "login", "username": "admin", "password": "password" },
+              {
+                "step": "installTheme",
+                "themeData": { "resource": "bundled", "path": "/polaris-wellbeing-theme-v1.0.1.zip" },
+                "options": { "activate": true }
+              },
+              {
+                "step": "installPlugin",
+                "pluginData": { "resource": "bundled", "path": "/polaris-core-v1.0.1.zip" },
+                "options": { "activate": true }
+              },
+              {
+                "step": "setSiteOptions",
+                "options": {
+                  "blogname": "Polaris Wellbeing",
+                  "blogdescription": "",
+                  "blog_public": "0",
+                  "timezone_string": "Europe/Malta"
+                }
+              },
+              {
+                "step": "runPHP",
+                "code": "<?php require_once '/wordpress/wp-load.php'; if ( function_exists( 'polaris_core_activate' ) ) { polaris_core_activate(); } update_option( 'blog_public', '0' ); flush_rewrite_rules();"
+              }
+            ]
+          }
+JSON
+
+          (cd package && zip -qr ../wordpress-dist/polaris-wordpress-playground-bundle-v1.0.1.zip blueprint.json polaris-wellbeing-theme-v1.0.1.zip polaris-core-v1.0.1.zip)
+          cp package/polaris-wellbeing-theme-v1.0.1.zip wordpress-dist/
+          cp package/polaris-core-v1.0.1.zip wordpress-dist/
+          cp CONTENT-MODEL.md INSTALLATION-GUIDE.md QA-ACCEPTANCE.md README-PACKAGE.md wordpress-dist/
+          (cd wordpress-dist && zip -qr polaris-wordpress-godaddy-package-v1.0.1.zip polaris-wellbeing-theme-v1.0.1.zip polaris-core-v1.0.1.zip CONTENT-MODEL.md INSTALLATION-GUIDE.md QA-ACCEPTANCE.md README-PACKAGE.md)
+          sha256sum wordpress-dist/* > wordpress-dist/SHA256SUMS.txt
+
+          python3 - <<'PY'
+          import json, pathlib, zipfile
+          out = pathlib.Path('wordpress-dist')
+          manifest = {}
+          for p in sorted(out.iterdir()):
+              if p.is_file():
+                  manifest[p.name] = {'bytes': p.stat().st_size}
+          (out/'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          for z in out.glob('*.zip'):
+              with zipfile.ZipFile(z) as archive:
+                  assert archive.testzip() is None, z
+          with zipfile.ZipFile(out/'polaris-wellbeing-theme-v1.0.1.zip') as archive:
+              names = set(archive.namelist())
+              assert 'polaris-wellbeing/style.css' in names
+              assert 'polaris-wellbeing/functions.php' in names
+          with zipfile.ZipFile(out/'polaris-core-v1.0.1.zip') as archive:
+              assert 'polaris-core/polaris-core.php' in set(archive.namelist())
+          with zipfile.ZipFile(out/'polaris-wordpress-playground-bundle-v1.0.1.zip') as archive:
+              assert {'blueprint.json','polaris-wellbeing-theme-v1.0.1.zip','polaris-core-v1.0.1.zip'} <= set(archive.namelist())
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Commit distributable package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf wordpress-dist
+          cp -a /tmp/polaris-wp-build/wordpress-dist ./wordpress-dist
+          git config user.name 'Polaris WordPress Build Bot'
+          git config user.email '78444086+citricbloom@users.noreply.github.com'
+          git add wordpress-dist
+          git commit -m 'Build agency QA Polaris WordPress package v1.0.1'
+          git push origin HEAD:polaris-preview
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-wordpress-package-v1.0.1
+          path: /tmp/polaris-wp-build/wordpress-dist
+          retention-days: 14
