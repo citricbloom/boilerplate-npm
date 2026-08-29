@@ -191,10 +191,10 @@ jobs:
 
               if (name === 'mobile') {
                 await page.locator('[data-menu-toggle]').click();
-                assert(await page.locator('[data-mobile-nav]').isVisible(), 'Mobile menu did not open');
+                await page.locator('[data-mobile-nav]').waitFor({ state: 'visible', timeout: 1500 });
                 await page.screenshot({ path: 'qa-evidence/mobile-menu.png', fullPage: false });
                 await page.keyboard.press('Escape');
-                assert(!(await page.locator('[data-mobile-nav]').isVisible()), 'Mobile menu did not close with Escape');
+                await page.locator('[data-mobile-nav]').waitFor({ state: 'hidden', timeout: 1500 });
                 await page.locator('.mobile-contact').click();
                 await page.waitForURL('**/talk-to-our-team.html');
                 assert(await page.locator('h1').innerText() === 'How would you like to talk?', 'Contact page did not load');
