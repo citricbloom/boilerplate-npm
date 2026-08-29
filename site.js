@@ -1,4 +1,12 @@
 (() => {
+  document.querySelectorAll('.header-cta').forEach(node => node.remove());
+
+  const heroImage = document.querySelector('.hero-media img');
+  if (heroImage) {
+    heroImage.alt = 'A stylised therapy scene in a warm consultation room';
+  }
+  document.querySelector('.hero-caption')?.remove();
+
   const toggle = document.querySelector('[data-menu-toggle]');
   const nav = document.querySelector('[data-mobile-nav]');
   const body = document.body;
