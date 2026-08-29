@@ -1,0 +1,80 @@
+name: Polaris final render QA
+
+on:
+  push:
+    branches:
+      - polaris-preview-working
+    paths:
+      - .github/workflows/polaris-final-render-qa.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 94530f620621564de1167e2ddaa2327a8a00501c
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Serve site
+        run: |
+          python3 -m http.server 8000 >/tmp/http.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8000/index.html >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/http.log
+          exit 1
+
+      - name: Test rendered mobile site
+        run: |
+          mkdir -p final-render-qa
+          node <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          (async () => {
+            const browser = await chromium.launch({headless:true});
+            const page = await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1});
+            await page.goto('http://127.0.0.1:8000/index.html',{waitUntil:'networkidle'});
+            const state = await page.evaluate(() => {
+              const logo = document.querySelector('.brand img');
+              const hero = document.querySelector('.hero-media img');
+              const bottom = document.querySelector('.mobile-contact');
+              return {
+                headerCta: document.querySelectorAll('.header-cta').length,
+                logoNatural: [logo?.naturalWidth || 0, logo?.naturalHeight || 0],
+                logoRect: logo ? [logo.getBoundingClientRect().width, logo.getBoundingClientRect().height] : [0,0],
+                heroNatural: [hero?.naturalWidth || 0, hero?.naturalHeight || 0],
+                heroAlt: hero?.alt || '',
+                caption: document.querySelectorAll('.hero-caption').length,
+                bottomVisible: !!bottom && getComputedStyle(bottom).display !== 'none'
+              };
+            });
+            if (state.headerCta !== 0) throw new Error('Sticky header CTA remains: '+JSON.stringify(state));
+            if (state.logoNatural[0] !== 285 || state.logoNatural[1] !== 100) throw new Error('Full logo missing: '+JSON.stringify(state));
+            if (state.heroNatural[0] !== 500 || state.heroNatural[1] !== 500) throw new Error('Therapy hero missing: '+JSON.stringify(state));
+            if (state.caption !== 0) throw new Error('Old caption remains: '+JSON.stringify(state));
+            if (!state.bottomVisible) throw new Error('Bottom CTA should remain: '+JSON.stringify(state));
+            fs.writeFileSync('final-render-qa/state.json',JSON.stringify(state,null,2));
+            await page.screenshot({path:'final-render-qa/mobile.png',fullPage:false});
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polaris-final-render-qa
+          path: final-render-qa
+          retention-days: 7
