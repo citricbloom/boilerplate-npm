@@ -3,7 +3,7 @@
 
   const heroImage = document.querySelector('.hero-media img');
   if (heroImage) {
-    heroImage.alt = 'A stylised therapy scene in a warm consultation room';
+    heroImage.alt = 'A colourful, welcoming therapy room';
   }
   document.querySelector('.hero-caption')?.remove();
 
