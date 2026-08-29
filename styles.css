@@ -382,3 +382,34 @@ body.contact-page .mobile-contact { display: none; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+
+/* Polaris full-logo lockup: remove duplicate HTML wordmark */
+.brand-name { display: none !important; }
+.brand img {
+  width: 148px;
+  height: auto;
+  max-height: 52px;
+  object-fit: contain;
+  object-position: left center;
+}
+.footer-brand img {
+  width: 156px;
+  height: auto;
+  max-height: 58px;
+  object-fit: contain;
+  object-position: left center;
+}
+.footer-brand strong { display: none !important; }
+
+@media (max-width: 759px) {
+  .brand img {
+    width: 118px;
+    height: auto;
+    max-height: 46px;
+  }
+  .footer-brand img {
+    width: 146px;
+    height: auto;
+  }
+}
