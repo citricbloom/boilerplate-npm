@@ -1,0 +1,175 @@
+name: Polaris mobile-first preview v0.3.1
+
+on:
+  push:
+    branches: [polaris-preview]
+    paths:
+      - .github/workflows/polaris-build-v031.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out preview branch
+        uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build and browser dependencies
+        run: |
+          python -m pip install --disable-pip-version-check requests beautifulsoup4 pillow lxml numpy opencv-python-headless playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Pull the published Polaris logo independently
+        run: |
+          python - <<'PY'
+          import io
+          from pathlib import Path
+          from urllib.parse import urljoin
+          import requests
+          from bs4 import BeautifulSoup
+          from PIL import Image, ImageOps
+
+          root = 'https://polariswellbeing.com/'
+          session = requests.Session()
+          session.headers['User-Agent'] = 'Mozilla/5.0 PolarisMigration/1.0'
+          response = session.get(root, timeout=40)
+          response.raise_for_status()
+          soup = BeautifulSoup(response.text, 'lxml')
+          choices = []
+          for img in soup.find_all('img'):
+              src = img.get('data-lazy-src') or img.get('data-src') or img.get('src')
+              if not src:
+                  continue
+              blob = f"{src} {img.get('alt','')} {' '.join(img.get('class') or [])}".lower()
+              if 'polaris-logo' in blob or 'cropped-polaris' in blob or 'logo' in blob:
+                  choices.append(urljoin(root, src))
+          if not choices:
+              raise RuntimeError('No published Polaris logo candidate found')
+          Path('assets').mkdir(exist_ok=True)
+          best = None
+          for url in choices:
+              try:
+                  content = session.get(url, timeout=30, headers={'Referer': root}).content
+                  image = Image.open(io.BytesIO(content))
+                  image = ImageOps.exif_transpose(image)
+                  area = image.width * image.height
+                  if best is None or area > best[0]:
+                      best = (area, image.copy(), url)
+              except Exception:
+                  pass
+          if best is None:
+              raise RuntimeError('Published Polaris logo candidates could not be decoded')
+          image = best[1]
+          image.thumbnail((900, 900), Image.Resampling.LANCZOS)
+          image.save('assets/polaris-logo.png', 'PNG', optimize=True)
+          print({'logo_source': best[2], 'size': image.size})
+          PY
+
+      - name: Build the shortened mobile-first site
+        run: python scripts/build_polaris_v03.py
+
+      - name: Ensure the authentic logo is visible in every header
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          replacement = '<span class="brand"><img src="assets/polaris-logo.png" alt="Polaris Wellbeing"><span class="brand-text">Polaris Wellbeing</span></span>'
+          for name in ('index.html','talk-to-our-team.html','services.html','braingym.html'):
+              path = Path(name)
+              text = path.read_text(encoding='utf-8')
+              text = text.replace('<span class="brand brand-text">Polaris Wellbeing</span>', replacement)
+              path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Serve and exercise the rendered mobile and desktop site
+        run: |
+          python -m http.server 8080 >/tmp/polaris-http.log 2>&1 &
+          python - <<'PY'
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          out = Path('review-v031')
+          out.mkdir(exist_ok=True)
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              mobile = browser.new_page(viewport={"width":390,"height":844},device_scale_factor=1,is_mobile=True,has_touch=True)
+              mobile.goto('http://127.0.0.1:8080/index.html', wait_until='networkidle')
+              assert mobile.locator('.brand img').is_visible()
+              assert 'Your life is connected' in mobile.locator('h1').first.inner_text()
+              assert 'psychology-led' not in mobile.locator('body').inner_text().lower()
+              cta = mobile.locator('.hero .button')
+              assert cta.is_visible()
+              box = cta.bounding_box()
+              assert box and box['y'] < 844, box
+              mobile.screenshot(path=str(out/'01-mobile-home.png'), full_page=True)
+              mobile.locator('.menu-button').click()
+              assert mobile.locator('.mobile-menu').evaluate("el=>el.classList.contains('is-open')")
+              mobile.screenshot(path=str(out/'02-mobile-menu.png'))
+              mobile.locator('.menu-button').click()
+              mobile.locator('.mobile-cta .button').click()
+              mobile.wait_for_url('**/talk-to-our-team.html')
+              assert mobile.locator('.choice').count() == 4
+              mobile.screenshot(path=str(out/'03-mobile-contact.png'), full_page=True)
+              mobile.go_back(wait_until='networkidle')
+              mobile.locator('a[href="services.html"]').first.click()
+              mobile.wait_for_url('**/services.html')
+              mobile.screenshot(path=str(out/'04-mobile-services.png'), full_page=True)
+
+              desktop = browser.new_page(viewport={"width":1440,"height":960})
+              desktop.goto('http://127.0.0.1:8080/index.html', wait_until='networkidle')
+              assert desktop.locator('.desktop-nav').is_visible()
+              desktop.screenshot(path=str(out/'05-desktop-home.png'), full_page=True)
+              desktop.locator('.desktop-nav a', has_text='BrainGym').click()
+              desktop.wait_for_url('**/braingym.html')
+              assert desktop.locator('h1').is_visible()
+              desktop.screenshot(path=str(out/'06-desktop-braingym.png'), full_page=True)
+              browser.close()
+          PY
+
+      - name: Validate assets, copy and page length
+        run: |
+          test -s assets/polaris-logo.png
+          test -s assets/polaris-hero.webp
+          test -s assets/polaris-space.webp
+          test -s assets/polaris-braingym.webp
+          ! grep -Rin "psychology-led" index.html talk-to-our-team.html services.html braingym.html
+          grep -q "Come in, take a seat" index.html
+          grep -q "Initial Wellbeing Consultation within 48 hours" index.html
+          python - <<'PY'
+          from bs4 import BeautifulSoup
+          text = BeautifulSoup(open('index.html', encoding='utf-8').read(), 'lxml').get_text(' ', strip=True)
+          words = len(text.split())
+          print({'homepage_words_including_navigation': words})
+          assert words < 620, words
+          PY
+
+      - name: Publish the tested preview
+        run: |
+          git config user.name "Polaris Preview Bot"
+          git config user.email "78444086+citricbloom@users.noreply.github.com"
+          git add index.html talk-to-our-team.html services.html braingym.html assets/
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "Publish warm mobile-first Polaris preview v0.3.1 [skip ci]"
+            git push origin HEAD:polaris-preview
+          fi
+
+      - name: Upload browser evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: polaris-preview-v031-browser-review
+          path: |
+            review-v031
+            assets/source-provenance.json
+          retention-days: 14
