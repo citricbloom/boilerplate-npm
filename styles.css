@@ -413,3 +413,35 @@ body.contact-page .mobile-contact { display: none; }
     height: auto;
   }
 }
+
+
+/* Polaris original full-logo proportions v2 */
+.brand img {
+  width: auto !important;
+  height: 56px !important;
+  max-width: none !important;
+  max-height: 56px !important;
+  object-fit: contain !important;
+  object-position: left center !important;
+}
+.footer-brand img {
+  width: auto !important;
+  height: 70px !important;
+  max-width: none !important;
+  max-height: 70px !important;
+  object-fit: contain !important;
+  object-position: left center !important;
+}
+
+@media (max-width: 759px) {
+  .brand img {
+    width: auto !important;
+    height: 52px !important;
+    max-height: 52px !important;
+  }
+  .footer-brand img {
+    width: auto !important;
+    height: 66px !important;
+    max-height: 66px !important;
+  }
+}
