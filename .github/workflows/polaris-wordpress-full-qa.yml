@@ -1,0 +1,159 @@
+name: Polaris WordPress full agency QA
+
+on:
+  push:
+    branches:
+      - polaris-preview
+    paths:
+      - .github/workflows/polaris-wordpress-full-qa.yml
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: polaris-preview
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install browser and audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save playwright@1.55.0 pixelmatch@5.3.0 pngjs@7.0.0 axe-core@4.10.3
+          npx playwright install --with-deps chromium
+
+      - name: Retrieve controlled QA runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .github/qa
+          curl --fail --location --retry 3 \
+            'https://cdn-editing-temp.picsart.com/editing-temp/176c5170-cbbc-4a37-bc52-103764797c0e.javascript' \
+            --output .github/qa/polaris-full-qa.mjs
+          echo 'eeb10900e4422d97f2e52b7d639d671478e5a799c7c6965267f952a3e3137a3a  .github/qa/polaris-full-qa.mjs' | sha256sum -c -
+          node --check .github/qa/polaris-full-qa.mjs
+
+      - name: Start approved static baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8123 > /tmp/polaris-static.log 2>&1 &
+          echo $! > /tmp/polaris-static.pid
+          for i in {1..30}; do
+            curl -fsS http://localhost:8123/index.html >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/polaris-static.log
+          exit 1
+
+      - name: Start WordPress runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/polaris-wordpress-runtime
+          npx --yes @wp-playground/cli@latest server \
+            --blueprint=wordpress-dist/polaris-wordpress-playground-bundle-v1.0.1.zip \
+            --port=9400 \
+            --verbosity=debug \
+            > /tmp/polaris-wordpress-runtime/playground.log 2>&1 &
+          echo $! > /tmp/polaris-wordpress-runtime/playground.pid
+
+          status=000
+          for i in {1..240}; do
+            status=$(curl -sS -L --max-redirs 10 --connect-timeout 2 --max-time 12 \
+              -o /tmp/polaris-wordpress-runtime/home.html \
+              -w '%{http_code}' \
+              http://localhost:9400/ || true)
+            echo "attempt=$i status=$status" >> /tmp/polaris-wordpress-runtime/status.log
+            if [ "$status" = "200" ] && grep -q 'Your life is connected' /tmp/polaris-wordpress-runtime/home.html; then
+              echo 'WordPress runtime ready.'
+              exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/polaris-wordpress-runtime/playground.pid)" 2>/dev/null; then
+              echo 'WordPress Playground exited unexpectedly.'
+              cat /tmp/polaris-wordpress-runtime/playground.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Runtime did not become ready. Final status: $status"
+          cat /tmp/polaris-wordpress-runtime/home.html || true
+          tail -300 /tmp/polaris-wordpress-runtime/playground.log || true
+          exit 1
+
+      - name: Run full visual, layout, behavior, accessibility and editability audit
+        id: fullqa
+        continue-on-error: true
+        shell: bash
+        env:
+          POLARIS_STATIC_BASE: http://localhost:8123
+          POLARIS_WP_BASE: http://localhost:9400
+          POLARIS_QA_OUTPUT: qa-output
+        run: |
+          node .github/qa/polaris-full-qa.mjs
+
+      - name: Inspect WordPress and PHP runtime logs
+        id: runtime_logs
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p qa-output/runtime
+          cp /tmp/polaris-static.log qa-output/runtime/static-server.log 2>/dev/null || true
+          cp -a /tmp/polaris-wordpress-runtime/. qa-output/runtime/ 2>/dev/null || true
+          find /tmp -maxdepth 9 -type f \( -name debug.log -o -name error_log \) -print > qa-output/runtime/discovered-runtime-logs.txt 2>/dev/null || true
+          has_fatal=0
+          while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            safe=$(printf '%s' "$file" | sed 's#[/ ]#_#g')
+            cp "$file" "qa-output/runtime/${safe}" 2>/dev/null || true
+            if grep -Eqi 'PHP (Fatal error|Parse error)|Uncaught (Error|Exception)|Allowed memory size.*exhausted' "$file"; then
+              echo "Fatal runtime evidence in $file"
+              grep -Ein 'PHP (Fatal error|Parse error)|Uncaught (Error|Exception)|Allowed memory size.*exhausted' "$file" || true
+              has_fatal=1
+            fi
+          done < qa-output/runtime/discovered-runtime-logs.txt
+          if [ "$has_fatal" -ne 0 ]; then exit 1; fi
+
+      - name: Generate QA evidence index
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('qa-output')
+          root.mkdir(exist_ok=True)
+          links=[]
+          for p in sorted(root.rglob('*')):
+              if p.is_file() and p.name != 'index.html':
+                  rel=p.relative_to(root).as_posix()
+                  links.append(f'<li><a href="{rel}">{rel}</a> <small>({p.stat().st_size:,} bytes)</small></li>')
+          html='''<!doctype html><html><head><meta charset="utf-8"><title>Polaris WordPress QA evidence</title><style>body{font:16px/1.5 system-ui;margin:40px;max-width:1000px;color:#14352e}a{color:#70485f}li{margin:.3rem 0}small{color:#567}</style></head><body><h1>Polaris WordPress QA evidence</h1><p>Generated from the approved static baseline and the installable WordPress runtime.</p><ul>'''+''.join(links)+'''</ul></body></html>'''
+          (root/'index.html').write_text(html,encoding='utf-8')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polaris-wordpress-full-agency-qa
+          path: qa-output
+          retention-days: 14
+          compression-level: 6
+
+      - name: Enforce release gate
+        if: always()
+        shell: bash
+        run: |
+          echo "Full QA outcome: ${{ steps.fullqa.outcome }}"
+          echo "Runtime-log outcome: ${{ steps.runtime_logs.outcome }}"
+          test '${{ steps.fullqa.outcome }}' = 'success'
+          test '${{ steps.runtime_logs.outcome }}' = 'success'
